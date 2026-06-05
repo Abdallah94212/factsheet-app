@@ -5,6 +5,14 @@ import requests as _requests
 from datetime import datetime
 from pathlib import Path
 
+# ── Cloud ODBC compatibility ──────────────────────────────────────────────────
+# On Streamlit Cloud, Microsoft ODBC 18 is unavailable; we ship odbcinst.ini
+# with a FreeTDS driver entry and point the ODBC runtime at it.
+os.environ.setdefault(
+    "ODBCSYSINI",
+    str(Path(__file__).parent.resolve()),
+)
+
 import pandas as pd
 import pyodbc
 import streamlit as st
@@ -28,8 +36,31 @@ def _build_conn_str(database="stage"):
     _usr = _db_cfg.get("username", "sa")
     _pwd = _db_cfg.get("password", "Ssql!2026Test123")
     _db  = _db_cfg.get("database", database)
+
+    # Pick the best available ODBC driver (Microsoft first, FreeTDS fallback)
+    _avail  = pyodbc.drivers()
+    _driver = next(
+        (d for d in [
+            "ODBC Driver 18 for SQL Server",
+            "ODBC Driver 17 for SQL Server",
+            "FreeTDS",
+        ] if d in _avail),
+        "FreeTDS",   # default when nothing is registered yet
+    )
+
+    if "FreeTDS" in _driver:
+        # FreeTDS uses separate SERVER / PORT and TDS_Version
+        _host, _port = (_srv.split(",") + ["1433"])[:2]
+        return (
+            f"DRIVER={{{_driver}}};"
+            f"SERVER={_host.strip()};"
+            f"PORT={_port.strip()};"
+            f"DATABASE={_db};"
+            f"UID={_usr};PWD={_pwd};"
+            "TDS_Version=7.4;"
+        )
     return (
-        "DRIVER={ODBC Driver 18 for SQL Server};"
+        f"DRIVER={{{_driver}}};"
         f"SERVER={_srv};"
         f"DATABASE={_db};"
         f"UID={_usr};PWD={_pwd};"
@@ -172,7 +203,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Navigation",
-        options=["📤 Export SQL → CSV", "📥 Import & Gestion des Tables", "🧑‍💻 Scripts Python", "🤖 Automatisation n8n", "📊 Tableau de bord", "🔬 Analyse SQL → Graphique"],
+        options=["📤 Export SQL → CSV", "📥 Import & Gestion des Tables", "🧑‍💻 Scripts Python", "🤖 Automatisation n8n", "📊 Tableau de bord", "🔬 Analyse SQL → Graphique", "📋 Factsheet Portefeuille"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -2308,6 +2339,7 @@ elif page == "🔬 Analyse SQL → Graphique":
             st.session_state["_nfs_mode"] = "custom"
             st.rerun()
 
+
     # ── Génération PDF ─────────────────────────────────────────────────────────
     if st.session_state.pop("_gen_nfs", False):
         _nfs_mode = st.session_state.get("_nfs_mode", "auto")
@@ -3016,13 +3048,19 @@ elif page == "🔬 Analyse SQL → Graphique":
             # Max usable height per column (page height - margins - header - footer)
             _MAX_COL_H = (_PH5 - 2.3*cm - 1.3*cm - 1.2*cm - 1.0*cm - 0.6*cm)
 
-            def _2col5(left_fl, right_fl):
+            # Available height on page 1 after the cover band elements
+            # (banner ~0.53cm + spacers + fund name ~0.71cm + share-class row ~0.69cm + safety)
+            _COVER_H   = 3.4*cm
+            _P1_COL_H  = _PH5 - 2.3*cm - 1.3*cm - _COVER_H
+
+            def _2col5(left_fl, right_fl, max_h=None):
+                _mh = max_h if max_h is not None else _MAX_COL_H
                 _lkif = KeepInFrame(
-                    _LW5, _MAX_COL_H,
+                    _LW5, _mh,
                     [_col5(left_fl, _LW5)],
                     mode="shrink")
                 _rkif = KeepInFrame(
-                    _RW5adj, _MAX_COL_H,
+                    _RW5adj, _mh,
                     [_col5(right_fl, _RW5adj)],
                     mode="shrink")
                 _tw = Table([[_lkif, Spacer(_VG5, 1), _rkif]],
@@ -3038,18 +3076,18 @@ elif page == "🔬 Analyse SQL → Graphique":
             # Chart styles (fallback auto charts) — 1px=1pt rendering
             _cstA = dict(
                 plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
-                font=dict(color="#222222", family="Arial, sans-serif", size=9),
-                margin=dict(l=52, r=14, t=14, b=90),
+                font=dict(color="#222222", family="Arial, sans-serif", size=11),
+                margin=dict(l=58, r=16, t=16, b=108),
                 xaxis=dict(gridcolor="#AAAAAA", gridwidth=1.5,
                            linecolor="#888888", linewidth=1.0,
-                           zeroline=False, tickfont=dict(size=9)),
+                           zeroline=False, tickfont=dict(size=11)),
                 yaxis=dict(gridcolor="#AAAAAA", gridwidth=1.5,
                            linecolor="#888888", linewidth=1.0,
-                           zeroline=False, tickfont=dict(size=9)),
+                           zeroline=False, tickfont=dict(size=11)),
                 legend=dict(bgcolor="rgba(255,255,255,0.9)",
                             bordercolor="#CCCCCC", borderwidth=0.5,
-                            font=dict(size=9, color="#333333"),
-                            orientation="h", yanchor="top", y=-0.24, x=0))
+                            font=dict(size=10, color="#333333"),
+                            orientation="h", yanchor="top", y=-0.38, x=0))
             _SHd5  = _ps5("shd5",  fontSize=10, fontName="Helvetica-Bold",
                            textColor=_CT5, leading=13)
             _SChH5 = _ps5("schh5", fontSize=9, fontName="Helvetica-Bold",
@@ -3128,35 +3166,36 @@ elif page == "🔬 Analyse SQL → Graphique":
                     _fig.update_traces(line=dict(width=2))
                 elif _ct in ("bar", "bar_stacked"):
                     _fig.update_traces(textfont=dict(size=9))
+                _cw_px = _pt2px5(col_w)
+                _ch_px = _pt2px5(col_h)
                 _fig.update_layout(
-                    height=_pt2px5(col_h),
+                    height=_ch_px,
                     plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
                     font=dict(color="#222222", family="Arial, sans-serif",
-                              size=9),
-                    margin=dict(l=52, r=14, t=14, b=90),
+                              size=11),
+                    margin=dict(l=58, r=16, t=16, b=108),
                     xaxis=dict(
                         gridcolor="#AAAAAA", gridwidth=1.5,
                         linecolor="#888888", linewidth=1.0,
                         zeroline=False,
-                        tickfont=dict(size=9),
-                        title_font=dict(size=9)),
+                        tickfont=dict(size=11),
+                        title_font=dict(size=10)),
                     yaxis=dict(
                         gridcolor="#AAAAAA", gridwidth=1.5,
                         linecolor="#888888", linewidth=1.0,
                         zeroline=False,
-                        tickfont=dict(size=9),
-                        title_font=dict(size=9),
+                        tickfont=dict(size=11),
+                        title_font=dict(size=10),
                         type="log" if _ly else "linear"),
                     legend=dict(
                         bgcolor="rgba(255,255,255,0.9)",
                         bordercolor="#CCCCCC", borderwidth=0.5,
-                        font=dict(size=9, color="#333333"),
+                        font=dict(size=10, color="#333333"),
                         orientation="h", yanchor="top",
-                        y=-0.24, x=0))
+                        y=-0.38, x=0))
                 try:
                     _img = _RLImg5(
-                        _f2png5(_fig, _pt2px5(col_w), _pt2px5(col_h),
-                                scale=1),
+                        _f2png5(_fig, _cw_px, _ch_px, scale=2),
                         width=col_w, height=col_h)
                     return _ttl, _img
                 except Exception:
@@ -3173,18 +3212,22 @@ elif page == "🔬 Analyse SQL → Graphique":
                              "line") == "pie"]
             _nonpie_bids = [b for b in _all_bids if b not in _pie_bids]
 
-            # Dynamic chart height — fills available space after text (~5cm estimate)
-            _nb_np = len(_nonpie_bids)
-            _txt_est = 5.0*cm   # estimated text height (highlights + spacers)
-            _avail   = _MAX_COL_H - _txt_est
-            if   _nb_np == 0: _ch_blk = _chA
-            elif _nb_np == 1: _ch_blk = min(_avail - 0.5*cm, 14.0*cm)
-            elif _nb_np == 2: _ch_blk = min((_avail - 0.8*cm) / 2, 10.0*cm)
-            else:             _ch_blk = min((_avail - 1.0*cm) / _nb_np, 8.0*cm)
+            # Page 1 : max 2 non-pie charts in the left column
+            # Remaining charts go to dedicated extra pages after page 2
+            _p1_bids    = _nonpie_bids[:2]
+            _extra_bids = _nonpie_bids[2:]
 
-            # Non-pie blocks → left column page 1
-            if _nonpie_bids:
-                for _bid in _nonpie_bids:
+            # Dynamic chart height for page 1 left column
+            _nb_p1   = len(_p1_bids)
+            _txt_est = 5.0*cm
+            _avail   = _P1_COL_H - _txt_est
+            if   _nb_p1 == 0: _ch_blk = _chA
+            elif _nb_p1 == 1: _ch_blk = min(_avail - 0.5*cm, 13.0*cm)
+            else:             _ch_blk = min((_avail - 0.8*cm) / 2, 10.0*cm)
+
+            # Non-pie blocks → left column page 1 (max 2)
+            if _p1_bids:
+                for _bid in _p1_bids:
                     _ttl_b, _img_b = _blk2img5(_bid, _LW5, _ch_blk)
                     if _img_b is not None:
                         _L1.append(Paragraph(f"<b>{_ttl_b}</b>", _SChH5))
@@ -3213,7 +3256,7 @@ elif page == "🔬 Analyse SQL → Graphique":
                     _fn.update_layout(height=_pt2px5(_chA), **_cstA)
                     _fn.update_traces(line=dict(width=2))
                     _L1.append(_RLImg5(
-                        _f2png5(_fn, _pt2px5(_LW5), _pt2px5(_chA), scale=1),
+                        _f2png5(_fn, _pt2px5(_LW5), _pt2px5(_chA), scale=2),
                         width=_LW5, height=_chA))
                     _L1.append(Spacer(1, 0.15*cm))
                     if _cal5:
@@ -3227,14 +3270,14 @@ elif page == "🔬 Analyse SQL → Graphique":
                                           for v in _cal_y],
                             text=[f"{v:+.1f}%" for v in _cal_y],
                             textposition="outside",
-                            textfont=dict(size=7, color="#424242")))
+                            textfont=dict(size=9, color="#424242")))
                         _fc.update_layout(
                             height=_pt2px5(_chS),
                             plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
-                            font=dict(color="#333333", family="Arial", size=9),
-                            margin=dict(l=48, r=14, t=24, b=80),
+                            font=dict(color="#333333", family="Arial", size=11),
+                            margin=dict(l=52, r=16, t=24, b=108),
                             xaxis=dict(type="category",
-                                       tickfont=dict(size=9),
+                                       tickfont=dict(size=11),
                                        gridcolor="#AAAAAA",
                                        gridwidth=1.5,
                                        linecolor="#888888"),
@@ -3244,15 +3287,15 @@ elif page == "🔬 Analyse SQL → Graphique":
                                        zeroline=True,
                                        zerolinecolor="#888888",
                                        ticksuffix="%",
-                                       tickfont=dict(size=9)),
+                                       tickfont=dict(size=11)),
                             legend=dict(bgcolor="rgba(255,255,255,0.9)",
                                         bordercolor="#CCCCCC",
                                         borderwidth=0.5,
-                                        font=dict(size=9),
+                                        font=dict(size=10),
                                         orientation="h",
-                                        yanchor="top", y=-0.22, x=0))
+                                        yanchor="top", y=-0.38, x=0))
                         _L1.append(_RLImg5(
-                            _f2png5(_fc, _pt2px5(_LW5), _pt2px5(_chS), scale=1),
+                            _f2png5(_fc, _pt2px5(_LW5), _pt2px5(_chS), scale=2),
                             width=_LW5, height=_chS))
 
             # ── PAGE 1 — Right column (35 %) ──────────────────────────────────
@@ -3277,24 +3320,20 @@ elif page == "🔬 Analyse SQL → Graphique":
             _R1.append(Spacer(1, _GAP5))
             _R1.append(_src_flow5("📋 Caractéristiques du fonds",  _RW5adj, 2.0*cm))
             _R1.append(Spacer(1, _GAP5))
-            _R1.append(_src_flow5("📋 Frais",                      _RW5adj, 2.0*cm))
+            _R1.append(_src_flow5("📋 Frais",                      _RW5adj, 1.8*cm))
             _R1.append(Spacer(1, _GAP5))
-            _R1.append(_src_flow5("📋 Management",                 _RW5adj, 2.0*cm))
+            _R1.append(_src_flow5("📋 Management",                 _RW5adj, 1.5*cm))
 
-            _story5.append(_2col5(_L1, _R1))
+            _story5.append(_2col5(_L1, _R1, max_h=_P1_COL_H))
             _cnt5[0] += 1
             _story5.append(PageBreak())
 
-            # ── PAGE 2 — Performance tables full width, then 2-col portfolio ──
-            _story5.append(_src_flow5("📋 Performances totales (%)",   _UW5, 2.5*cm))
-            _story5.append(Spacer(1, _GAP5))
-            _story5.append(_src_flow5("📋 Performance annualisée (%)", _UW5, 2.0*cm))
-            _story5.append(Spacer(1, _GAP5))
-            _story5.append(_src_flow5("📋 Mesures de risque",          _UW5, 2.5*cm))
-            _story5.append(Spacer(1, _GAP5))
+            # ── PAGE 2 — Portfolio composition (performance tables are in right sidebar) ──
 
-            # Pie chart height — taller for readability
-            _ch_pie = 12.0*cm if len(_pie_bids) <= 1 else 10.0*cm
+            # Pie height : réduit si un graphique extra sera intégré en bas de L2
+            _ch_pie = (11.0*cm if _extra_bids else min(_MAX_COL_H - 3.5*cm, 14.0*cm)) \
+                      if len(_pie_bids) <= 1 \
+                      else min((_MAX_COL_H - 4.0*cm) / len(_pie_bids), 12.0*cm)
 
             # Pie section: user's pie blocks first, then alloc table
             _L2 = []
@@ -3316,16 +3355,107 @@ elif page == "🔬 Analyse SQL → Graphique":
             _L2.append(Spacer(1, 0.25*cm))
             _L2.append(_src_flow5("📋 Répartition d'actifs (tableau)",
                                    _LW5, 2.0*cm))
+
+            # Intégrer le 1er graphique extra dans L2 (espace restant ~7.5cm)
+            _L2_emb = False
+            if _extra_bids:
+                _ch_L2_ex = 7.5*cm
+                _te_em, _ie_em = _blk2img5(_extra_bids[0], _LW5, _ch_L2_ex)
+                if _ie_em:
+                    _L2.append(HRFlowable(width=_LW5, thickness=0.5,
+                                           color=_rlc5.HexColor("#BDBDBD")))
+                    _L2.append(Spacer(1, 0.2*cm))
+                    _L2.append(Paragraph(f"<b>{_te_em}</b>", _SChH5))
+                    _L2.append(Spacer(1, 0.06*cm))
+                    _L2.append(_ie_em)
+                    _L2_emb = True
+
             _R2 = [
-                _src_flow5("📋 Top 10 positions",       _RW5adj, 2.5*cm),
-                Spacer(1, 0.4*cm),
+                _src_flow5("📋 Performances totales (%)",   _RW5adj, 2.2*cm),
+                Spacer(1, _GAP5),
+                _src_flow5("📋 Performance annualisée (%)", _RW5adj, 1.5*cm),
+                Spacer(1, _GAP5),
+                _src_flow5("📋 Mesures de risque",          _RW5adj, 2.2*cm),
+                Spacer(1, 0.3*cm),
                 HRFlowable(width=_RW5adj, thickness=0.5,
                             color=_rlc5.HexColor("#BDBDBD")),
-                Spacer(1, 0.25*cm),
-                _src_flow5("📋 Répartition par devise", _RW5adj, 2.0*cm),
+                Spacer(1, 0.2*cm),
+                _src_flow5("📋 Top 10 positions",           _RW5adj, 2.5*cm),
+                Spacer(1, 0.3*cm),
+                HRFlowable(width=_RW5adj, thickness=0.5,
+                            color=_rlc5.HexColor("#BDBDBD")),
+                Spacer(1, 0.2*cm),
+                _src_flow5("📋 Répartition par devise",     _RW5adj, 1.8*cm),
             ]
             _story5.append(_2col5(_L2, _R2))
             _cnt5[0] += 1
+
+            # ── Pages supplémentaires : graphiques extra (hors L2) ───────────
+            # Le 1er extra est déjà intégré dans L2 si _L2_emb est True
+            _remain_ex = _extra_bids[1:] if _L2_emb else _extra_bids
+            if _remain_ex:
+                _story5.append(PageBreak())
+                _hw_ex  = (_UW5 - 0.4*cm) / 2
+                _GAP_RW = 0.5*cm
+
+                for _pi in range(0, len(_remain_ex), 4):
+                    _pbids = _remain_ex[_pi:_pi + 4]
+                    _n_pb  = len(_pbids)
+                    if _pi > 0:
+                        _story5.append(PageBreak())
+
+                    if _n_pb <= 2:
+                        # ≤ 2 graphiques : empilement vertical pleine largeur
+                        _n_rows = _n_pb
+                        _ch_ex  = min(
+                            (_MAX_COL_H - (_n_rows - 1) * _GAP_RW - 0.5*cm) / _n_rows,
+                            14.0*cm)
+                        for _bi_ex in _pbids:
+                            _te, _ie = _blk2img5(_bi_ex, _UW5, _ch_ex)
+                            if _ie:
+                                _story5.append(Paragraph(f"<b>{_te}</b>", _SChH5))
+                                _story5.append(Spacer(1, 0.06*cm))
+                                _story5.append(_ie)
+                                _story5.append(Spacer(1, _GAP_RW))
+                                _cnt5[0] += 1
+                    else:
+                        # 3-4 graphiques : 2 colonnes, hauteur calculée pour remplir
+                        _n_rows = (_n_pb + 1) // 2
+                        _ch_ex  = min(
+                            (_MAX_COL_H - (_n_rows - 1) * _GAP_RW - 0.5*cm) / _n_rows,
+                            11.0*cm)
+                        for _ri in range(0, _n_pb, 2):
+                            _ebatch = _pbids[_ri:_ri + 2]
+                            if _ri > 0:
+                                _story5.append(Spacer(1, _GAP_RW))
+                            if len(_ebatch) == 1:
+                                _te, _ie = _blk2img5(_ebatch[0], _UW5, _ch_ex)
+                                if _ie:
+                                    _story5.append(Paragraph(f"<b>{_te}</b>", _SChH5))
+                                    _story5.append(Spacer(1, 0.06*cm))
+                                    _story5.append(_ie)
+                                    _cnt5[0] += 1
+                            else:
+                                _t1e, _i1e = _blk2img5(_ebatch[0], _hw_ex, _ch_ex)
+                                _t2e, _i2e = _blk2img5(_ebatch[1], _hw_ex, _ch_ex)
+                                _le = ([Paragraph(f"<b>{_t1e}</b>", _SChH5),
+                                        Spacer(1, 0.06*cm), _i1e]
+                                       if _i1e else [Spacer(_hw_ex, 1)])
+                                _re = ([Paragraph(f"<b>{_t2e}</b>", _SChH5),
+                                        Spacer(1, 0.06*cm), _i2e]
+                                       if _i2e else [Spacer(_hw_ex, 1)])
+                                _twe = Table(
+                                    [[_col5(_le, _hw_ex), Spacer(0.4*cm, 1),
+                                      _col5(_re, _hw_ex)]],
+                                    colWidths=[_hw_ex, 0.4*cm, _hw_ex])
+                                _twe.setStyle(TableStyle([
+                                    ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                                    ("TOPPADDING",    (0,0), (-1,-1), 0),
+                                    ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+                                    ("LEFTPADDING",   (0,0), (-1,-1), 0),
+                                    ("RIGHTPADDING",  (0,0), (-1,-1), 0)]))
+                                _story5.append(_twe)
+                                _cnt5[0] += 2
 
         # ══════════════════════════════════════════════════════════════════════
         # MODE PERSONNALISÉ : mise en page choisie par l'utilisateur
@@ -3429,3 +3559,508 @@ elif page == "🔬 Analyse SQL → Graphique":
             file_name=st.session_state.get("_nfs_pdf_name", "factsheet.pdf"),
             mime="application/pdf", use_container_width=True, key="dl_nfs5",
         )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 7 — FACTSHEET PORTEFEUILLE
+# ═════════════════════════════════════════════════════════════════════════════
+
+elif page == "📋 Factsheet Portefeuille":
+    import io as _io_e
+    import html as _html_e
+    import plotly.graph_objects as _go_e
+    from reportlab.lib.pagesizes import A4 as _A4e
+    from reportlab.lib import colors as _rlce
+    from reportlab.lib.units import cm as _cme
+    from reportlab.lib.styles import ParagraphStyle as _PSe
+    from reportlab.lib.enums import TA_RIGHT as _TAR_e, TA_CENTER as _TAC_e
+    from reportlab.platypus import (
+        SimpleDocTemplate as _SDT_e, Paragraph as _Par_e, Spacer as _Spc_e,
+        Image as _Img_e, Table as _Tbl_e, TableStyle as _TblS_e,
+        KeepInFrame as _KIF_e,
+    )
+
+    st.title("📋 Factsheet Portefeuille")
+    st.caption("Générez un factsheet PDF institutionnel directement depuis STAGEPORTFOLIO.")
+    st.markdown("---")
+
+    # ── Chargement des portefeuilles ──────────────────────────────────────────
+    @st.cache_data(ttl=120)
+    def _load_pf_list():
+        _c = pyodbc.connect(_build_conn_str("STAGEPORTFOLIO"), timeout=10, autocommit=True)
+        _nav = pd.read_sql(
+            "SELECT n.nav_date, n.nav_value, n.aum, p.portfolio_name "
+            "FROM pf.nav n JOIN pf.portfolio p ON n.portfolio_id = p.portfolio_id "
+            "ORDER BY p.portfolio_name, n.nav_date", _c)
+        _pos_dates = pd.read_sql(
+            "SELECT DISTINCT p.portfolio_name, "
+            "       CONVERT(varchar(10), pos.position_date, 120) AS pos_date "
+            "FROM pf.position pos "
+            "JOIN pf.portfolio p ON pos.portfolio_id = p.portfolio_id "
+            "ORDER BY p.portfolio_name, pos_date", _c)
+        _c.close()
+        _nav["nav_date"] = pd.to_datetime(_nav["nav_date"])
+        return _nav, _pos_dates
+
+    try:
+        _nav_all_e, _pos_dates_all_e = _load_pf_list()
+        _pf_names_e = sorted(_nav_all_e["portfolio_name"].dropna().unique().tolist())
+    except Exception as _le:
+        st.error(f"Connexion STAGEPORTFOLIO impossible : {_le}")
+        st.stop()
+
+    # ── Sélecteurs ───────────────────────────────────────────────────────────
+    _c1, _c2 = st.columns([3, 2])
+    _sel_pf_e = _c1.selectbox("Portefeuille", _pf_names_e, key="fp_pf")
+
+    _pos_dates_pf = sorted(
+        _pos_dates_all_e[_pos_dates_all_e["portfolio_name"] == _sel_pf_e]["pos_date"]
+        .dropna().unique().tolist(), reverse=True)
+
+    if not _pos_dates_pf:
+        st.warning("Aucune date de position disponible pour ce portefeuille.")
+        st.stop()
+
+    _sel_date_e = _c2.selectbox("Date d'arrêté (positions)", _pos_dates_pf, key="fp_date")
+
+    # ── KPI preview ──────────────────────────────────────────────────────────
+    _nav_filt_e  = _nav_all_e[_nav_all_e["portfolio_name"] == _sel_pf_e].sort_values("nav_date")
+    _nav_at_e    = _nav_filt_e[_nav_filt_e["nav_date"] <= pd.to_datetime(_sel_date_e)]
+    if not _nav_at_e.empty:
+        _aum_ui_e  = float(_nav_at_e["aum"].iloc[-1])
+        _navv_ui_e = float(_nav_at_e["nav_value"].iloc[-1])
+        _nts_ui_e  = _nav_filt_e.set_index("nav_date")["nav_value"]
+        _ytd_r_ui  = _nts_ui_e[_nts_ui_e.index < pd.Timestamp(pd.to_datetime(_sel_date_e).year, 1, 1)]
+        _ytd_ui_e  = ((_navv_ui_e / float(_ytd_r_ui.iloc[-1]) - 1) * 100) if not _ytd_r_ui.empty else None
+        _1yr_ui    = _nts_ui_e[_nts_ui_e.index <= pd.to_datetime(_sel_date_e) - pd.DateOffset(years=1)]
+        _1y_ui_e   = ((_navv_ui_e / float(_1yr_ui.iloc[-1]) - 1) * 100) if not _1yr_ui.empty else None
+
+        _m1, _m2, _m3, _m4 = st.columns(4)
+        _m1.metric("AUM", f"{_aum_ui_e:,.1f} M")
+        _m2.metric("NAV", f"{_navv_ui_e:.2f}")
+        _m3.metric("YTD",   f"{_ytd_ui_e:+.2f}%" if _ytd_ui_e is not None else "—")
+        _m4.metric("1 An",  f"{_1y_ui_e:+.2f}%"  if _1y_ui_e  is not None else "—")
+
+    # ── Configuration du contenu ─────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### ⚙️ Contenu du factsheet")
+    st.caption("Cochez les sections à inclure dans le PDF.")
+
+    _cfg_l, _cfg_r = st.columns(2)
+    with _cfg_l:
+        st.markdown("**Colonne gauche (60 %)**")
+        _show_pres = st.checkbox("📝 Présentation du portefeuille", value=True, key="fp_show_pres")
+        _show_nav  = st.checkbox("📈 Évolution de la NAV",          value=True, key="fp_show_nav")
+        _show_geo  = st.checkbox("🌍 Allocation géographique",      value=True, key="fp_show_geo")
+    with _cfg_r:
+        st.markdown("**Colonne droite (38 %)**")
+        _show_perf = st.checkbox("📊 Tableau des performances",      value=True, key="fp_show_perf")
+        _show_ac   = st.checkbox("🥧 Allocation classes d'actifs",   value=True, key="fp_show_ac")
+        _show_top5 = st.checkbox("🏆 Top 5 positions",               value=True, key="fp_show_top5")
+
+    st.markdown("---")
+    if st.button("🚀 Générer la Factsheet PDF",
+                 type="primary", use_container_width=True, key="fp_gen"):
+        st.session_state["_fp_gen"]       = True
+        st.session_state["_fp_pf"]        = _sel_pf_e
+        st.session_state["_fp_date"]      = _sel_date_e
+        st.session_state["_fp_show_pres"] = _show_pres
+        st.session_state["_fp_show_nav"]  = _show_nav
+        st.session_state["_fp_show_geo"]  = _show_geo
+        st.session_state["_fp_show_perf"] = _show_perf
+        st.session_state["_fp_show_ac"]   = _show_ac
+        st.session_state["_fp_show_top5"] = _show_top5
+        st.rerun()
+
+    if "_fp_pdf_bytes" in st.session_state:
+        st.success(f"✅ {st.session_state.get('_fp_pdf_name', 'factsheet.pdf')}")
+        st.download_button(
+            "⬇️ Télécharger la Factsheet PDF",
+            data=st.session_state["_fp_pdf_bytes"],
+            file_name=st.session_state.get("_fp_pdf_name", "factsheet.pdf"),
+            mime="application/pdf", use_container_width=True, key="fp_dl",
+        )
+
+    # ── Génération PDF ────────────────────────────────────────────────────────
+    if st.session_state.pop("_fp_gen", False):
+        _sel_pf_e   = st.session_state.get("_fp_pf",   "")
+        _sel_date_e = st.session_state.get("_fp_date", "")
+        _cfg_pres   = st.session_state.get("_fp_show_pres", True)
+        _cfg_nav    = st.session_state.get("_fp_show_nav",  True)
+        _cfg_geo    = st.session_state.get("_fp_show_geo",  True)
+        _cfg_perf   = st.session_state.get("_fp_show_perf", True)
+        _cfg_ac     = st.session_state.get("_fp_show_ac",   True)
+        _cfg_top5   = st.session_state.get("_fp_show_top5", True)
+
+        _etx = lambda s: _html_e.escape(str(s or ""))
+
+        try:
+            _dbc_e = pyodbc.connect(_build_conn_str("STAGEPORTFOLIO"), timeout=10, autocommit=True)
+
+            _pf_info_e = pd.read_sql(
+                "SELECT portfolio_name, base_currency, risk_profile, inception_date "
+                "FROM pf.portfolio WHERE portfolio_name = ?",
+                _dbc_e, params=[_sel_pf_e])
+
+            _nav_ts_sql_e = pd.read_sql(
+                "SELECT n.nav_date, n.nav_value, n.aum "
+                "FROM pf.nav n JOIN pf.portfolio p ON n.portfolio_id = p.portfolio_id "
+                "WHERE p.portfolio_name = ? ORDER BY n.nav_date",
+                _dbc_e, params=[_sel_pf_e])
+            _nav_ts_sql_e["nav_date"] = pd.to_datetime(_nav_ts_sql_e["nav_date"])
+
+            _pos_sql_e = pd.read_sql(
+                "SELECT i.instrument_name, i.asset_class, "
+                "       COALESCE(i.country, 'N/A') AS country, "
+                "       pos.quantity, pos.market_value "
+                "FROM pf.position pos "
+                "JOIN pf.portfolio p ON pos.portfolio_id = p.portfolio_id "
+                "JOIN pf.instrument i ON pos.instrument_id = i.instrument_id "
+                "WHERE p.portfolio_name = ? "
+                "  AND CAST(pos.position_date AS DATE) = CAST(? AS DATE) "
+                "ORDER BY pos.market_value DESC",
+                _dbc_e, params=[_sel_pf_e, _sel_date_e])
+
+            _bench_sql_e = pd.read_sql(
+                "SELECT b.benchmark_name FROM pf.portfolio_benchmark pb "
+                "JOIN pf.portfolio p ON pb.portfolio_id = p.portfolio_id "
+                "JOIN pf.benchmark b ON pb.benchmark_id = b.benchmark_id "
+                "WHERE p.portfolio_name = ? AND pb.end_date IS NULL",
+                _dbc_e, params=[_sel_pf_e])
+
+            _dbc_e.close()
+        except Exception as _dbe_e:
+            st.error(f"Erreur SQL : {_dbe_e}")
+            import traceback; st.code(traceback.format_exc())
+            st.stop()
+
+        # ── Calculs ───────────────────────────────────────────────────────────
+        _pfi_e     = _pf_info_e.iloc[0] if not _pf_info_e.empty else {}
+        _pf_ccy_e  = str(_pfi_e.get("base_currency", "EUR") or "EUR")
+        _pf_risk_e = str(_pfi_e.get("risk_profile",  "—")   or "—")
+        _inc_raw_e = _pfi_e.get("inception_date")
+        _pf_inc_e  = (pd.to_datetime(_inc_raw_e).strftime("%d/%m/%Y")
+                      if _inc_raw_e is not None else "—")
+        _bench_nm_e = (str(_bench_sql_e["benchmark_name"].iloc[0])
+                       if not _bench_sql_e.empty else "—")
+
+        _nav_up_e  = _nav_ts_sql_e[_nav_ts_sql_e["nav_date"] <= pd.to_datetime(_sel_date_e)]
+        _nav_now_e = float(_nav_up_e["nav_value"].iloc[-1]) if not _nav_up_e.empty else 0
+        _aum_now_e = float(_nav_up_e["aum"].iloc[-1])       if not _nav_up_e.empty else 0
+        _nav_idx_e = _nav_up_e.set_index("nav_date")["nav_value"]
+
+        def _perf_e(offset):
+            _ref = _nav_idx_e[_nav_idx_e.index <= pd.to_datetime(_sel_date_e) - offset]
+            return ((_nav_now_e / float(_ref.iloc[-1]) - 1) * 100) if not _ref.empty else None
+
+        _ytd_ref_e  = _nav_idx_e[_nav_idx_e.index < pd.Timestamp(pd.to_datetime(_sel_date_e).year, 1, 1)]
+        _perf_ytd_e = ((_nav_now_e / float(_ytd_ref_e.iloc[-1]) - 1) * 100) if not _ytd_ref_e.empty else None
+        _perf_1y_e  = _perf_e(pd.DateOffset(years=1))
+        _perf_1m_e  = _perf_e(pd.DateOffset(months=1))
+        _perf_3m_e  = _perf_e(pd.DateOffset(months=3))
+
+        def _fp_e(v): return "—" if v is None else f"{v:+.2f}%"
+
+        _total_mv_e = float(_pos_sql_e["market_value"].sum()) if not _pos_sql_e.empty else 0
+        _n_instr_e  = len(_pos_sql_e)
+
+        _ac_e = (_pos_sql_e.groupby("asset_class")["market_value"]
+                 .sum().sort_values(ascending=False)
+                 if not _pos_sql_e.empty else pd.Series(dtype=float))
+
+        _geo_e = (_pos_sql_e.groupby("country")["market_value"]
+                  .sum().sort_values(ascending=False).head(5)
+                  if not _pos_sql_e.empty else pd.Series(dtype=float))
+        _geo_pct_e = (_geo_e / _total_mv_e * 100) if _total_mv_e > 0 else _geo_e * 0
+
+        # ── Palette ───────────────────────────────────────────────────────────
+        _CE_NAV  = _rlce.HexColor("#0A1628")
+        _CE_GOLD = _rlce.HexColor("#C8963A")
+        _CE_WHT  = _rlce.white
+        _CE_LBG  = _rlce.HexColor("#F7F8FB")
+        _CE_LBG2 = _rlce.HexColor("#EEF2FF")
+        _CE_TXT  = _rlce.HexColor("#1C1C2E")
+        _CE_MG   = _rlce.HexColor("#8494A8")
+        _CE_LN   = _rlce.HexColor("#E2E8F0")
+        _CE_GRN  = _rlce.HexColor("#1E8449")
+        _CE_RED  = _rlce.HexColor("#C0392B")
+
+        # ── Dimensions ────────────────────────────────────────────────────────
+        _PW_e = _A4e[0]; _PH_e = _A4e[1]
+        _MG_e  = 1.2 * _cme
+        _UW_e  = _PW_e - 2 * _MG_e
+        _HDR_e = 4.2 * _cme
+        _KPI_e = 2.0 * _cme
+        _GAP_e = 0.4 * _cme
+        _LW_e  = _UW_e * 0.60
+        _RW_e  = _UW_e - _LW_e - _GAP_e
+        _TOP_e = _MG_e + _HDR_e + _KPI_e + 0.35 * _cme
+        _BOT_e = _MG_e + 0.7 * _cme
+        _CH_e  = _PH_e - _TOP_e - _BOT_e - 14
+
+        # ── Styles ────────────────────────────────────────────────────────────
+        def _se(n, **kw): return _PSe(n, **kw)
+
+        _SE_BODY = _se("eBody", fontName="Helvetica",         fontSize=8.5, textColor=_CE_TXT, leading=11.5)
+        _SE_THL  = _se("eThl",  fontName="Helvetica-Bold",    fontSize=8,   textColor=_CE_WHT, leading=10)
+        _SE_THD  = _se("eThd",  fontName="Helvetica-Bold",    fontSize=7.5, textColor=_CE_WHT, leading=10, alignment=_TAC_e)
+        _SE_TLB  = _se("eTlb",  fontName="Helvetica-Bold",    fontSize=8,   textColor=_CE_NAV, leading=10)
+        _SE_TVL  = _se("eTvl",  fontName="Helvetica",         fontSize=8,   textColor=_CE_TXT, leading=10, alignment=_TAR_e)
+        _SE_GRN  = _se("eGrn",  fontName="Helvetica-Bold",    fontSize=8,   textColor=_CE_GRN, leading=10, alignment=_TAR_e)
+        _SE_RED2 = _se("eRed",  fontName="Helvetica-Bold",    fontSize=8,   textColor=_CE_RED, leading=10, alignment=_TAR_e)
+
+        def _e_img(fig, wp, hp, scale=2):
+            _b = _io_e.BytesIO()
+            fig.write_image(_b, format="png", width=int(wp*scale), height=int(hp*scale), scale=1)
+            _b.seek(0)
+            return _Img_e(_b, width=wp, height=hp)
+
+        def _e_sec(title, width):
+            _t = _Tbl_e(
+                [[_Par_e(title.upper(),
+                          _se(f"sh{abs(hash(title))}", fontName="Helvetica-Bold",
+                              fontSize=8, textColor=_CE_WHT, leading=10))]],
+                colWidths=[width])
+            _t.setStyle(_TblS_e([
+                ("BACKGROUND",    (0,0), (-1,-1), _CE_NAV),
+                ("TOPPADDING",    (0,0), (-1,-1), 5),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                ("LEFTPADDING",   (0,0), (-1,-1), 8),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+            ]))
+            return _t
+
+        def _perf_par_e(v):
+            if v is None: return _Par_e("—", _SE_TVL)
+            return _Par_e(f"{v:+.2f}%", _SE_GRN if v >= 0 else _SE_RED2)
+
+        # ── COLONNE GAUCHE ────────────────────────────────────────────────────
+        _L_e = []
+
+        if _cfg_pres:
+            _L_e.append(_e_sec("Presentation du Portefeuille", _LW_e))
+            _L_e.append(_Spc_e(1, 0.2 * _cme))
+            for _dl in [
+                f"<b>Devise :</b> {_etx(_pf_ccy_e)}",
+                f"<b>Profil de risque :</b> {_etx(_pf_risk_e)}",
+                f"<b>Date de creation :</b> {_etx(_pf_inc_e)}",
+                f"<b>Benchmark :</b> {_etx(_bench_nm_e)}",
+                f"<b>Nombre d'instruments :</b> {_n_instr_e}",
+            ]:
+                _L_e.append(_Par_e(_dl, _SE_BODY))
+                _L_e.append(_Spc_e(1, 0.06 * _cme))
+            _L_e.append(_Spc_e(1, 0.25 * _cme))
+
+        if _cfg_nav:
+            _FIG_NAV_e = _go_e.Figure()
+            _FIG_NAV_e.add_trace(_go_e.Scatter(
+                x=_nav_up_e["nav_date"].dt.strftime("%Y-%m-%d").tolist(),
+                y=_nav_up_e["nav_value"].tolist(),
+                mode="lines",
+                line=dict(color="#0A1628", width=2.5),
+                fill="tozeroy", fillcolor="rgba(10,22,40,0.08)",
+            ))
+            _FIG_NAV_e.update_layout(
+                height=int(6.5 * _cme),
+                plot_bgcolor="#F7F8FB", paper_bgcolor="#FFFFFF",
+                font=dict(family="Arial, sans-serif", size=9.5, color="#1C1C2E"),
+                margin=dict(l=50, r=12, t=12, b=40), showlegend=False,
+                xaxis=dict(tickfont=dict(size=9), gridcolor="#E2E8F0", linecolor="#C8D0DC", zeroline=False),
+                yaxis=dict(tickfont=dict(size=9), gridcolor="#E2E8F0", linecolor="#C8D0DC", zeroline=False,
+                           title=dict(text="NAV", font=dict(size=9))),
+            )
+            _L_e.append(_e_sec("Evolution de la Valeur Liquidative (NAV)", _LW_e))
+            _L_e.append(_Spc_e(1, 0.12 * _cme))
+            _L_e.append(_e_img(_FIG_NAV_e, _LW_e, 6.5 * _cme))
+            _L_e.append(_Spc_e(1, 0.28 * _cme))
+
+        if _cfg_geo and not _geo_pct_e.empty and float(_geo_pct_e.max()) > 0:
+            _geo_lbl_e = [_etx(str(c)) for c in _geo_pct_e.index.tolist()]
+            _geo_val_e = [float(v) for v in _geo_pct_e.values.tolist()]
+            _gmx_e     = max(_geo_val_e)
+            _FIG_GEO_e = _go_e.Figure(_go_e.Bar(
+                y=list(range(len(_geo_lbl_e))),
+                x=_geo_val_e[::-1],
+                orientation="h",
+                marker_color=["#0A1628","#1A3A7A","#2E5BA0","#5A8AC0","#8AB4D8"][:len(_geo_lbl_e)],
+                text=[f"  {n}   {v:.1f}%" for n, v in zip(_geo_lbl_e[::-1], _geo_val_e[::-1])],
+                textposition="outside",
+                textfont=dict(size=9.5, color="#0A1628", family="Arial"),
+                cliponaxis=False,
+            ))
+            _FIG_GEO_e.update_layout(
+                height=int(3.5 * _cme),
+                plot_bgcolor="#F7F8FB", paper_bgcolor="#FFFFFF",
+                font=dict(family="Arial, sans-serif", size=9.5),
+                margin=dict(l=5, r=95, t=5, b=5),
+                xaxis=dict(visible=False, range=[0, _gmx_e * 2.0]),
+                yaxis=dict(visible=False),
+                showlegend=False, bargap=0.28,
+            )
+            _L_e.append(_e_sec("Allocation Geographique (% valeur de marche)", _LW_e))
+            _L_e.append(_Spc_e(1, 0.12 * _cme))
+            _L_e.append(_e_img(_FIG_GEO_e, _LW_e, 3.5 * _cme))
+
+        # ── COLONNE DROITE ────────────────────────────────────────────────────
+        _R_e = []
+
+        # Performance table
+        _perf_rows_e = [
+            [_Par_e("Periode", _SE_THL), _Par_e("Performance", _SE_THD)],
+            [_Par_e("1 Mois",  _SE_TLB), _perf_par_e(_perf_1m_e)],
+            [_Par_e("3 Mois",  _SE_TLB), _perf_par_e(_perf_3m_e)],
+            [_Par_e("YTD",     _SE_TLB), _perf_par_e(_perf_ytd_e)],
+            [_Par_e("1 An",    _SE_TLB), _perf_par_e(_perf_1y_e)],
+        ]
+        _perf_tbl_e = _Tbl_e(_perf_rows_e, colWidths=[_RW_e * 0.58, _RW_e * 0.42])
+        _perf_tbl_e.setStyle(_TblS_e([
+            ("BACKGROUND",    (0,0), (-1,0),  _CE_NAV),
+            ("ROWBACKGROUNDS",(0,1), (-1,-1), [_CE_LBG, _CE_LBG2]),
+            ("FONTSIZE",      (0,0), (-1,-1), 8),
+            ("TOPPADDING",    (0,0), (-1,-1), 7),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+            ("LEFTPADDING",   (0,0), (-1,-1), 8),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+            ("LINEBELOW",     (0,0), (-1,-1), 0.4, _CE_LN),
+            ("LINEBELOW",     (0,-1),(-1,-1), 1.5, _CE_NAV),
+        ]))
+        if _cfg_perf:
+            _R_e.append(_e_sec("Performances", _RW_e))
+            _R_e.append(_Spc_e(1, 0.15 * _cme))
+            _R_e.append(_perf_tbl_e)
+            _R_e.append(_Spc_e(1, 0.35 * _cme))
+
+        if _cfg_ac and not _ac_e.empty:
+            _FIG_AC_e = _go_e.Figure(_go_e.Pie(
+                labels=_ac_e.index.tolist(), values=[float(v) for v in _ac_e.values],
+                hole=0.48, textinfo="percent", textfont=dict(size=9.5),
+                marker=dict(
+                    colors=["#0A1628","#C8963A","#2E5BA0","#5A8AC0","#8AB4D8"][:len(_ac_e)],
+                    line=dict(color="#FFFFFF", width=2.5)),
+                hoverinfo="skip",
+            ))
+            _FIG_AC_e.update_layout(
+                height=int(5.5 * _cme),
+                plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+                font=dict(family="Arial, sans-serif", size=9),
+                margin=dict(l=5, r=5, t=8, b=58),
+                legend=dict(font=dict(size=8.5), bgcolor="rgba(0,0,0,0)",
+                            orientation="h", yanchor="top", y=-0.12, x=0.5, xanchor="center"),
+            )
+            _R_e.append(_e_sec("Allocation par Classe d'Actifs", _RW_e))
+            _R_e.append(_Spc_e(1, 0.12 * _cme))
+            _R_e.append(_e_img(_FIG_AC_e, _RW_e, 5.5 * _cme))
+            _R_e.append(_Spc_e(1, 0.35 * _cme))
+
+        if _cfg_top5 and not _pos_sql_e.empty:
+            _top5_e = _pos_sql_e.head(5)
+            _t5r_e  = [[_Par_e("Instrument", _SE_THL),
+                        _Par_e("Classe",     _SE_THD),
+                        _Par_e("Poids",      _SE_THD)]]
+            for _, _tr5 in _top5_e.iterrows():
+                _pct5 = float(_tr5["market_value"]) / _total_mv_e * 100 if _total_mv_e > 0 else 0
+                _t5r_e.append([
+                    _Par_e(_etx(str(_tr5["instrument_name"])[:26]), _SE_TLB),
+                    _Par_e(_etx(str(_tr5["asset_class"])),           _SE_TVL),
+                    _Par_e(f"{_pct5:.1f}%",                          _SE_TVL),
+                ])
+            _cw5n = _RW_e * 0.50; _cw5c = _RW_e * 0.28; _cw5p = _RW_e - _cw5n - _cw5c
+            _t5tbl = _Tbl_e(_t5r_e, colWidths=[_cw5n, _cw5c, _cw5p])
+            _t5tbl.setStyle(_TblS_e([
+                ("BACKGROUND",    (0,0), (-1,0),  _CE_NAV),
+                ("ROWBACKGROUNDS",(0,1), (-1,-1), [_CE_LBG, _CE_LBG2]),
+                ("FONTSIZE",      (0,0), (-1,-1), 7.5),
+                ("TOPPADDING",    (0,0), (-1,-1), 6),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+                ("LEFTPADDING",   (0,0), (-1,-1), 5),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 5),
+                ("LINEBELOW",     (0,0), (-1,-1), 0.4, _CE_LN),
+                ("LINEBELOW",     (0,-1),(-1,-1), 1.5, _CE_NAV),
+            ]))
+            _R_e.append(_e_sec("Top 5 Positions", _RW_e))
+            _R_e.append(_Spc_e(1, 0.15 * _cme))
+            _R_e.append(_t5tbl)
+
+        # ── Canvas header / KPI bar / footer ─────────────────────────────────
+        _ent_date_r_e = pd.to_datetime(_sel_date_e).strftime("%d/%m/%Y")
+
+        def _ent_hdr_cb(canvas, doc):
+            canvas.saveState()
+            _hx = _MG_e; _hy = _PH_e - _MG_e - _HDR_e
+            canvas.setFillColor(_CE_NAV)
+            canvas.rect(_hx, _hy, _UW_e, _HDR_e, fill=1, stroke=0)
+            canvas.setFillColor(_CE_GOLD)
+            canvas.rect(_hx, _hy, 0.5*_cme, _HDR_e, fill=1, stroke=0)
+            canvas.setFillColor(_rlce.white)
+            canvas.setFont("Helvetica-Bold", 22)
+            canvas.drawString(_hx+0.8*_cme, _hy+_HDR_e-1.45*_cme, _sel_pf_e.upper()[:50])
+            canvas.setFont("Helvetica-Oblique", 9)
+            canvas.setFillColor(_CE_GOLD)
+            canvas.drawString(_hx+0.8*_cme, _hy+_HDR_e-2.2*_cme, f"Benchmark : {_bench_nm_e}")
+            canvas.setFont("Helvetica", 9)
+            canvas.setFillColor(_rlce.HexColor("#A8B8D8"))
+            canvas.drawString(_hx+0.8*_cme, _hy+_HDR_e-3.0*_cme,
+                              f"Devise : {_pf_ccy_e}  |  Profil : {_pf_risk_e}  |  Creation : {_pf_inc_e}")
+            canvas.drawRightString(_hx+_UW_e-0.4*_cme, _hy+_HDR_e-0.85*_cme, _ent_date_r_e)
+            canvas.setFont("Helvetica-Bold", 7)
+            canvas.setFillColor(_CE_GOLD)
+            canvas.drawRightString(_hx+_UW_e-0.4*_cme, _hy+_HDR_e-1.65*_cme, "CONFIDENTIEL")
+            _ky = _hy - _KPI_e
+            canvas.setFillColor(_CE_LBG)
+            canvas.rect(_hx, _ky, _UW_e, _KPI_e, fill=1, stroke=0)
+            canvas.setStrokeColor(_CE_GOLD); canvas.setLineWidth(2)
+            canvas.line(_hx, _ky, _hx+_UW_e, _ky)
+            _kpis_e = [
+                ("AUM",        f"{_aum_now_e:,.1f} M{_pf_ccy_e}"),
+                ("NAV",        f"{_nav_now_e:.2f}"),
+                ("YTD",        _fp_e(_perf_ytd_e)),
+                ("PERF. 1 AN", _fp_e(_perf_1y_e)),
+            ]
+            _kw_e = _UW_e / len(_kpis_e)
+            for _ki_e, (_klab_e, _kval_e) in enumerate(_kpis_e):
+                _kxc_e = _hx + _ki_e*_kw_e + _kw_e/2
+                canvas.setFillColor(_CE_NAV); canvas.setFont("Helvetica-Bold", 14)
+                canvas.drawCentredString(_kxc_e, _ky+_KPI_e*0.50, str(_kval_e))
+                canvas.setFillColor(_CE_MG); canvas.setFont("Helvetica", 7)
+                canvas.drawCentredString(_kxc_e, _ky+_KPI_e*0.2, str(_klab_e))
+                if _ki_e > 0:
+                    canvas.setStrokeColor(_CE_LN); canvas.setLineWidth(0.7)
+                    canvas.line(_hx+_ki_e*_kw_e, _ky+6, _hx+_ki_e*_kw_e, _ky+_KPI_e-6)
+            _fy = _MG_e*0.4
+            canvas.setStrokeColor(_CE_LN); canvas.setLineWidth(0.5)
+            canvas.line(_hx, _fy+0.35*_cme, _hx+_UW_e, _fy+0.35*_cme)
+            canvas.setFillColor(_CE_MG); canvas.setFont("Helvetica", 6.5)
+            canvas.drawString(_hx, _fy+0.1*_cme,
+                f"Document confidentiel — {_sel_pf_e} — {_ent_date_r_e}  "
+                "|  Les performances passees ne prejudgent pas des performances futures.")
+            canvas.drawRightString(_hx+_UW_e, _fy+0.1*_cme, "DATA PLATFORM — STAGEPORTFOLIO")
+            canvas.restoreState()
+
+        # ── Build PDF ─────────────────────────────────────────────────────────
+        _BUF_e = _io_e.BytesIO()
+        _doc_e = _SDT_e(_BUF_e, pagesize=_A4e,
+                        topMargin=_TOP_e, bottomMargin=_BOT_e,
+                        leftMargin=_MG_e, rightMargin=_MG_e)
+        _kif_L_e = _KIF_e(_LW_e, _CH_e, _L_e, mode="shrink")
+        _kif_R_e = _KIF_e(_RW_e, _CH_e, _R_e, mode="shrink")
+        _tw_e    = _Tbl_e([[_kif_L_e, _Spc_e(_GAP_e, 1), _kif_R_e]],
+                           colWidths=[_LW_e, _GAP_e, _RW_e])
+        _tw_e.setStyle(_TblS_e([
+            ("VALIGN",        (0,0), (-1,-1), "TOP"),
+            ("TOPPADDING",    (0,0), (-1,-1), 0),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+            ("LEFTPADDING",   (0,0), (-1,-1), 0),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+        ]))
+        try:
+            with st.spinner("Compilation du PDF…"):
+                _doc_e.build([_tw_e], onFirstPage=_ent_hdr_cb, onLaterPages=_ent_hdr_cb)
+            _BUF_e.seek(0)
+            _fname_e = f"factsheet_{_sel_pf_e.replace(' ','_').lower()}_{_sel_date_e.replace('-','')}.pdf"
+            st.session_state["_fp_pdf_bytes"] = _BUF_e.read()
+            st.session_state["_fp_pdf_name"]  = _fname_e
+        except Exception as _ee:
+            st.error(f"Erreur PDF : {_ee}")
+            import traceback; st.code(traceback.format_exc())
+            st.session_state.pop("_fp_pdf_bytes", None)
+        st.rerun()
