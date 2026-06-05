@@ -30,6 +30,22 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Keep-alive : empêche la déconnexion WebSocket (ping toutes les 45s) ───────
+import streamlit.components.v1 as _stc
+_stc.html("""
+<script>
+(function keepAlive() {
+    // Envoie un message vide au parent Streamlit toutes les 45 secondes
+    // pour maintenir la connexion WebSocket active
+    setInterval(function() {
+        try {
+            window.parent.postMessage({type: "streamlit:setComponentValue", value: null}, "*");
+        } catch(e) {}
+    }, 45000);
+})();
+</script>
+""", height=0, width=0)
+
 def _build_conn_str(database="stage"):
     _db_cfg = st.secrets.get("db", {})
     _srv = _db_cfg.get("server",   "127.0.0.1,1433")

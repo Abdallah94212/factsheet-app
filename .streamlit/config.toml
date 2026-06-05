@@ -1,0 +1,12 @@
+[server]
+maxUploadSize        = 200
+enableWebsocketCompression = false
+# 0 = no timeout (session never killed server-side)
+maxMessageSize       = 200
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+# Re-run on any file save (dev convenience)
+fastReruns = true
