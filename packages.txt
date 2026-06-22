@@ -1,4 +1,0 @@
-freetds-bin
-tdsodbc
-unixodbc
-unixodbc-dev

@@ -5,16 +5,8 @@ import requests as _requests
 from datetime import datetime
 from pathlib import Path
 
-# ── Cloud ODBC compatibility ──────────────────────────────────────────────────
-# On Streamlit Cloud, Microsoft ODBC 18 is unavailable; we ship odbcinst.ini
-# with a FreeTDS driver entry and point the ODBC runtime at it.
-os.environ.setdefault(
-    "ODBCSYSINI",
-    str(Path(__file__).parent.resolve()),
-)
-
 import pandas as pd
-import pyodbc
+import pymssql
 import streamlit as st
 
 from queries import QUERIES
@@ -46,44 +38,18 @@ _stc.html("""
 </script>
 """, height=0, width=0)
 
-def _build_conn_str(database="stage"):
+def _get_conn_params(database="stage"):
     _db_cfg = st.secrets.get("db", {})
     _srv = _db_cfg.get("server",   "127.0.0.1,1433")
     _usr = _db_cfg.get("username", "sa")
     _pwd = _db_cfg.get("password", "Ssql!2026Test123")
     _db  = _db_cfg.get("database", database)
+    _host, _port = (_srv.split(",") + ["1433"])[:2]
+    return dict(server=_host.strip(), port=int(_port.strip()),
+                user=_usr, password=_pwd, database=_db, tds_version="7.4")
 
-    # Pick the best available ODBC driver (Microsoft first, FreeTDS fallback)
-    _avail  = pyodbc.drivers()
-    _driver = next(
-        (d for d in [
-            "ODBC Driver 18 for SQL Server",
-            "ODBC Driver 17 for SQL Server",
-            "FreeTDS",
-        ] if d in _avail),
-        "FreeTDS",   # default when nothing is registered yet
-    )
-
-    if "FreeTDS" in _driver:
-        # FreeTDS uses separate SERVER / PORT and TDS_Version
-        _host, _port = (_srv.split(",") + ["1433"])[:2]
-        return (
-            f"DRIVER={{{_driver}}};"
-            f"SERVER={_host.strip()};"
-            f"PORT={_port.strip()};"
-            f"DATABASE={_db};"
-            f"UID={_usr};PWD={_pwd};"
-            "TDS_Version=7.4;"
-        )
-    return (
-        f"DRIVER={{{_driver}}};"
-        f"SERVER={_srv};"
-        f"DATABASE={_db};"
-        f"UID={_usr};PWD={_pwd};"
-        "Encrypt=yes;TrustServerCertificate=yes;"
-    )
-
-CONN_STR = _build_conn_str("stage")
+# Keep _build_conn_str as alias so existing call sites work unchanged
+_build_conn_str = _get_conn_params
 
 DEFAULT_OUTPUT_DIR = "/Users/abdallahborji/script_valider"
 SCRIPTS_DIR = Path(os.getcwd()) / "user_scripts"
@@ -95,7 +61,7 @@ SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 # ─────────────────────────────────────────────
 
 def get_connection():
-    return pyodbc.connect(CONN_STR)
+    return pymssql.connect(**_get_conn_params("stage"))
 
 
 
@@ -180,8 +146,8 @@ def _get_column_types(cursor, schema: str, table: str) -> dict[str, str]:
     """Retourne {column_name: data_type} depuis INFORMATION_SCHEMA."""
     cursor.execute(
         "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
-        "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-        schema, table,
+        "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION",
+        (schema, table),
     )
     return {row[0]: row[1] for row in cursor.fetchall()}
 
@@ -437,8 +403,8 @@ elif page == "📥 Import & Gestion des Tables":
                 schema, tbl = _split_table(table_name)
                 cursor.execute(
                     "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-                    schema, tbl,
+                    "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION",
+                    (schema, tbl),
                 )
                 sql_columns = [row[0] for row in cursor.fetchall()]
                 conn.close()
@@ -550,7 +516,7 @@ elif page == "📥 Import & Gestion des Tables":
                                 try:
                                     cursor.execute(insert_sql, row)
                                     inserted += 1
-                                except pyodbc.IntegrityError as e:
+                                except pymssql.IntegrityError as e:
                                     err_msg = str(e)
                                     # 547 = FK violation / 2627 & 2601 = PK/UNIQUE violation
                                     if "547" in err_msg or "FOREIGN KEY" in err_msg.upper() or "REFERENCE" in err_msg.upper():
@@ -590,7 +556,7 @@ elif page == "📥 Import & Gestion des Tables":
                                 try:
                                     cursor.execute(insert_sql, row)
                                     inserted += 1
-                                except pyodbc.IntegrityError as e:
+                                except pymssql.IntegrityError as e:
                                     err_msg = str(e)
                                     if "547" in err_msg or "FOREIGN KEY" in err_msg.upper():
                                         fk_errors_insert.append((dict(zip(import_df.columns, row)), err_msg))
@@ -693,8 +659,8 @@ elif page == "📥 Import & Gestion des Tables":
                 m_schema, m_tbl = _split_table(m_table)
                 cursor.execute(
                     "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-                    m_schema, m_tbl,
+                    "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION",
+                    (m_schema, m_tbl),
                 )
                 m_sql_cols = [r[0] for r in cursor.fetchall()]
                 m_col_types = _get_column_types(cursor, m_schema, m_tbl)
@@ -1170,11 +1136,11 @@ elif page == "📊 Tableau de bord":
     from pathlib import Path
     from datetime import date
 
-    CONN_PF = _build_conn_str("STAGEPORTFOLIO")
+    CONN_PF = _get_conn_params("STAGEPORTFOLIO")
 
     @st.cache_data(ttl=60)
     def load_data():
-        conn = pyodbc.connect(CONN_PF, timeout=10, autocommit=True)
+        conn = pymssql.connect(**CONN_PF)
         nav = pd.read_sql("""
             SELECT n.nav_date, n.nav_value, n.aum,
                    p.portfolio_name, p.base_currency, p.inception_date
@@ -1610,7 +1576,7 @@ elif page == "🔬 Analyse SQL → Graphique":
     import plotly.graph_objects as go
     import io as _io
 
-    CONN_PF = _build_conn_str("STAGEPORTFOLIO")
+    CONN_PF = _get_conn_params("STAGEPORTFOLIO")
 
     CHART_BG   = "#1E1E2E"
     PAPER_BG   = "#13131F"
@@ -1872,7 +1838,7 @@ elif page == "🔬 Analyse SQL → Graphique":
                     errors.append(f"Bloc {bid+1} : requête non SELECT ignorée")
                     continue
                 try:
-                    conn   = pyodbc.connect(CONN_PF, timeout=10, autocommit=True)
+                    conn   = pymssql.connect(**CONN_PF)
                     df_res = pd.read_sql(sql, conn)
                     conn.close()
                     st.session_state[f"block_{k}_df"] = df_res
@@ -1925,7 +1891,7 @@ elif page == "🔬 Analyse SQL → Graphique":
             else:
                 try:
                     with st.spinner("Exécution…"):
-                        conn = pyodbc.connect(CONN_PF, timeout=10, autocommit=True)
+                        conn = pymssql.connect(**CONN_PF)
                         df_res = pd.read_sql(sql_query, conn)
                         conn.close()
                     st.session_state[f"block_{k}_df"] = df_res
@@ -2096,7 +2062,7 @@ elif page == "🔬 Analyse SQL → Graphique":
     @st.cache_data(ttl=300)
     def _nfs_load_pf():
         try:
-            _c = pyodbc.connect(CONN_PF, timeout=5, autocommit=True)
+            _c = pymssql.connect(**CONN_PF)
             _r = pd.read_sql("SELECT portfolio_name FROM pf.portfolio ORDER BY portfolio_name",
                              _c)["portfolio_name"].tolist()
             _c.close(); return _r
@@ -2105,7 +2071,7 @@ elif page == "🔬 Analyse SQL → Graphique":
     @st.cache_data(ttl=300)
     def _nfs_load_bm():
         try:
-            _c = pyodbc.connect(CONN_PF, timeout=5, autocommit=True)
+            _c = pymssql.connect(**CONN_PF)
             _r = pd.read_sql("SELECT benchmark_name FROM pf.benchmark ORDER BY benchmark_name",
                              _c)["benchmark_name"].tolist()
             _c.close(); return _r
@@ -2400,7 +2366,7 @@ elif page == "🔬 Analyse SQL → Graphique":
         if _has_auto5 and _pf5:
             with st.spinner("Chargement des données…"):
                 try:
-                    _dbc5 = pyodbc.connect(CONN_PF, timeout=10, autocommit=True)
+                    _dbc5 = pymssql.connect(**CONN_PF)
                     _spf5 = _pf5.replace("'","''")
                     _ndf5 = pd.read_sql(
                         "SELECT n.nav_date, n.nav_value, n.aum,"
@@ -3603,7 +3569,7 @@ elif page == "📋 Factsheet Portefeuille":
     # ── Chargement des portefeuilles ──────────────────────────────────────────
     @st.cache_data(ttl=120)
     def _load_pf_list():
-        _c = pyodbc.connect(_build_conn_str("STAGEPORTFOLIO"), timeout=10, autocommit=True)
+        _c = pymssql.connect(**_get_conn_params("STAGEPORTFOLIO"))
         _nav = pd.read_sql(
             "SELECT n.nav_date, n.nav_value, n.aum, p.portfolio_name "
             "FROM pf.nav n JOIN pf.portfolio p ON n.portfolio_id = p.portfolio_id "
@@ -3711,17 +3677,17 @@ elif page == "📋 Factsheet Portefeuille":
         _etx = lambda s: _html_e.escape(str(s or ""))
 
         try:
-            _dbc_e = pyodbc.connect(_build_conn_str("STAGEPORTFOLIO"), timeout=10, autocommit=True)
+            _dbc_e = pymssql.connect(**_get_conn_params("STAGEPORTFOLIO"))
 
             _pf_info_e = pd.read_sql(
                 "SELECT portfolio_name, base_currency, risk_profile, inception_date "
-                "FROM pf.portfolio WHERE portfolio_name = ?",
+                "FROM pf.portfolio WHERE portfolio_name = %s",
                 _dbc_e, params=[_sel_pf_e])
 
             _nav_ts_sql_e = pd.read_sql(
                 "SELECT n.nav_date, n.nav_value, n.aum "
                 "FROM pf.nav n JOIN pf.portfolio p ON n.portfolio_id = p.portfolio_id "
-                "WHERE p.portfolio_name = ? ORDER BY n.nav_date",
+                "WHERE p.portfolio_name = %s ORDER BY n.nav_date",
                 _dbc_e, params=[_sel_pf_e])
             _nav_ts_sql_e["nav_date"] = pd.to_datetime(_nav_ts_sql_e["nav_date"])
 
@@ -3732,8 +3698,8 @@ elif page == "📋 Factsheet Portefeuille":
                 "FROM pf.position pos "
                 "JOIN pf.portfolio p ON pos.portfolio_id = p.portfolio_id "
                 "JOIN pf.instrument i ON pos.instrument_id = i.instrument_id "
-                "WHERE p.portfolio_name = ? "
-                "  AND CAST(pos.position_date AS DATE) = CAST(? AS DATE) "
+                "WHERE p.portfolio_name = %s "
+                "  AND CAST(pos.position_date AS DATE) = CAST(%s AS DATE) "
                 "ORDER BY pos.market_value DESC",
                 _dbc_e, params=[_sel_pf_e, _sel_date_e])
 
@@ -3741,7 +3707,7 @@ elif page == "📋 Factsheet Portefeuille":
                 "SELECT b.benchmark_name FROM pf.portfolio_benchmark pb "
                 "JOIN pf.portfolio p ON pb.portfolio_id = p.portfolio_id "
                 "JOIN pf.benchmark b ON pb.benchmark_id = b.benchmark_id "
-                "WHERE p.portfolio_name = ? AND pb.end_date IS NULL",
+                "WHERE p.portfolio_name = %s AND pb.end_date IS NULL",
                 _dbc_e, params=[_sel_pf_e])
 
             _dbc_e.close()
