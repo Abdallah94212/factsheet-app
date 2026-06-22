@@ -9,7 +9,6 @@ import math
 from datetime import datetime
 
 import pandas as pd
-import pyodbc
 
 
 # ─────────────────────────────────────────────
@@ -171,15 +170,15 @@ def save_mapping(conn, target_table: str, mapping: dict[str, str]) -> int:
     cursor = conn.cursor()
     _ensure_table(cursor)
     cursor.execute(
-        "SELECT ISNULL(MAX(version), 0) + 1 FROM dbo.import_mapping WHERE target_table = ?",
-        target_table,
+        "SELECT ISNULL(MAX(version), 0) + 1 FROM dbo.import_mapping WHERE target_table = %s",
+        (target_table,),
     )
     version = cursor.fetchone()[0]
     for csv_col, sql_col in mapping.items():
         cursor.execute(
             "INSERT INTO dbo.import_mapping (target_table, csv_column, sql_column, version) "
-            "VALUES (?, ?, ?, ?)",
-            target_table, csv_col, sql_col, version,
+            "VALUES (%s, %s, %s, %s)",
+            (target_table, csv_col, sql_col, version),
         )
     conn.commit()
     return version
@@ -193,12 +192,12 @@ def load_mapping(conn, target_table: str) -> dict[str, str]:
         """
         SELECT csv_column, sql_column
         FROM   dbo.import_mapping
-        WHERE  target_table = ?
+        WHERE  target_table = %s
           AND  version = (
-              SELECT MAX(version) FROM dbo.import_mapping WHERE target_table = ?
+              SELECT MAX(version) FROM dbo.import_mapping WHERE target_table = %s
           )
         """,
-        target_table, target_table,
+        (target_table, target_table),
     )
     return {r[0]: r[1] for r in cursor.fetchall()}
 
@@ -211,10 +210,10 @@ def load_history(conn, target_table: str) -> pd.DataFrame:
         """
         SELECT version, csv_column, sql_column, created_at
         FROM   dbo.import_mapping
-        WHERE  target_table = ?
+        WHERE  target_table = %s
         ORDER  BY version DESC, csv_column
         """,
-        target_table,
+        (target_table,),
     )
     rows = cursor.fetchall()
     return pd.DataFrame(
